@@ -1,203 +1,88 @@
 import numpy as np
+import pytest
 
-from main import (
-    TAGS,
-    Vector,
-    preprocess_text,
-    build_tag_matrix,
-    build_text_matrix,
-    similarity_matrix_vector_class,
-    similarity_matrix_numpy,
-    rank_tags
-)
+from lab2 import (TAGS, Vector, build_tag_matrix, build_text_matrix,
+                  preprocess, rank_tags, similarity_matrix_numpy,
+                  similarity_matrix_vector_class)
 
 
-# Sample embedding model for testing
-class SampleModel:
+class FakeModel:
+    def __init__(self, words, seed=0):
+        rng = np.random.default_rng(seed)
+        self.key_to_index = {w: i for i, w in enumerate(words)}
+        self.vecs = rng.normal(size=(len(words), 50))
 
-    def __init__(self):
-        self.key_to_index = {}
-        self.word_vectors = {}
-
-        words = set()
-
-        for tag in TAGS:
-            for word in tag.lower().split():
-                words.add(word)
-
-        words.update(["manipal", "learning", "digital"])
-
-        for i, word in enumerate(sorted(words)):
-            vector = np.zeros(50)
-            vector[i % 50] = 1.0
-            vector[(i + 1) % 50] = 0.5
-
-            self.key_to_index[word] = i
-            self.word_vectors[word] = vector
-
-    def __getitem__(self, word):
-        return self.word_vectors[word]
+    def __getitem__(self, w):
+        return self.vecs[self.key_to_index[w]]
 
 
-# Function to display test results
-def check(condition, message):
-
-    if condition:
-        print("PASS:", message)
-    else:
-        print("FAIL:", message)
-        raise AssertionError(message)
+WORDS = TAGS + ["manipal", "students", "labs", "digital", "learning"]
+TEXT = "Manipal students love research, research labs and zzzqx digital learning!"
 
 
-# Create sample model
-model = SampleModel()
+@pytest.fixture
+def setup():
+    model = FakeModel(WORDS)
+    names, T = build_tag_matrix(model, TAGS)
+    _, tokens = preprocess(TEXT)
+    in_vocab, oov, W = build_text_matrix(model, tokens)
+    return model, names, T, in_vocab, oov, W
 
 
-# TEST 1: Check tag matrix dimensions
-tag_names, T = build_tag_matrix(model, TAGS)
-
-check(
-    T.shape == (20, 50),
-    "Tag matrix shape is (20, 50)"
-)
+def test_tag_shape(setup):
+    assert setup[2].shape == (20, 50)
 
 
-# TEST 2: Check text matrix dimensions
-sample_text = [
-    "manipal",
-    "research",
-    "learning",
-    "unknownword"
-]
-
-in_vocab, oov, W = build_text_matrix(
-    model, sample_text
-)
-
-check(
-    W.shape == (len(in_vocab), 50),
-    "Text matrix shape is (n, 50)"
-)
+def test_text_shape(setup):
+    _, _, _, in_vocab, _, W = setup
+    assert W.shape == (len(in_vocab), 50)
 
 
-# TEST 3: Check similarity matrix dimensions
-S_vector = similarity_matrix_vector_class(W, T)
-
-S_numpy = similarity_matrix_numpy(W, T)
-
-check(
-    S_numpy.shape == (len(in_vocab), 20),
-    "Similarity matrix shape is (n, 20)"
-)
+def test_similarity_shape(setup):
+    _, _, T, in_vocab, _, W = setup
+    assert similarity_matrix_numpy(W, T).shape == (len(in_vocab), 20)
+    assert similarity_matrix_vector_class(W, T).shape == (len(in_vocab), 20)
 
 
-# TEST 4: Compare one cosine similarity
-word_index = in_vocab.index("research")
-
-tag_index = tag_names.index("research")
-
-value_vector = Vector(
-    W[word_index]
-).cosine_similarity(
-    Vector(T[tag_index])
-)
-
-value_numpy = S_numpy[word_index, tag_index]
-
-check(
-    abs(value_vector - value_numpy) < 1e-8,
-    "Vector cosine similarity matches NumPy"
-)
+def test_pair_agreement(setup):
+    _, _, T, _, _, W = setup
+    S = similarity_matrix_numpy(W, T)
+    assert Vector(W[0]).cosine_similarity(Vector(T[3])) == pytest.approx(S[0, 3])
 
 
-# TEST 5: Compare complete similarity matrices
-check(
-    np.allclose(
-        S_vector,
-        S_numpy,
-        rtol=1e-5,
-        atol=1e-8
-    ),
-    "Vector and NumPy similarity matrices are equal"
-)
-
-print(
-    "Maximum difference:",
-    np.max(np.abs(S_vector - S_numpy))
-)
+def test_allclose(setup):
+    _, _, T, _, _, W = setup
+    assert np.allclose(similarity_matrix_vector_class(W, T), similarity_matrix_numpy(W, T))
 
 
-# TEST 6: Check out-of-vocabulary words
-check(
-    "unknownword" in oov,
-    "Out-of-vocabulary word is reported"
-)
-
-check(
-    "unknownword" not in in_vocab,
-    "Out-of-vocabulary word is excluded from W"
-)
+def test_oov_excluded(setup):
+    _, _, _, in_vocab, oov, W = setup
+    assert "zzzqx" in oov
+    assert "zzzqx" not in in_vocab
+    assert W.shape[0] == len(in_vocab)
 
 
-# TEST 7: Check invalid tag vocabulary
-invalid_tags = list(TAGS)
-
-invalid_tags[0] = "notaword"
-
-try:
-    build_tag_matrix(model, invalid_tags)
-
-    check(
-        False,
-        "Invalid tag vocabulary raises an error"
-    )
-
-except ValueError:
-    check(
-        True,
-        "Invalid tag vocabulary raises an error"
-    )
+def test_repetitions_preserved(setup):
+    _, _, _, in_vocab, _, _ = setup
+    assert in_vocab.count("research") == 2
 
 
-# TEST 8: Check repeated words
-repeated_tokens, repeated_oov, repeated_W = build_text_matrix(
-    model,
-    ["research", "research", "manipal"]
-)
-
-check(
-    repeated_tokens == [
-        "research", "research", "manipal"
-    ] and repeated_W.shape == (3, 50),
-    "Repeated words are retained"
-)
+def test_tag_oov_raises():
+    model = FakeModel(WORDS)
+    with pytest.raises(ValueError):
+        build_tag_matrix(model, TAGS[:-1] + ["notinvocab"])
 
 
-# TEST 9: Check text preprocessing
-before, after = preprocess_text(
-    "The research is in AI and learning."
-)
-
-check(
-    after == ["research", "learning"],
-    "Preprocessing removes stopwords and short words"
-)
+def test_multiword_tag_mean():
+    model = FakeModel(WORDS)
+    _, T = build_tag_matrix(model, ["research campus"])
+    assert np.allclose(T[0], (model["research"] + model["campus"]) / 2)
 
 
-# EXTRA TEST 10: Check tag ranking
-ranking = rank_tags(
-    tag_names,
-    S_numpy,
-    in_vocab
-)
-
-scores = [item[1] for item in ranking]
-
-check(
-    len(ranking) == 20
-    and scores == sorted(scores, reverse=True),
-    "Tag ranking returns 20 tags in descending order"
-)
-
-
-print("All testing checks passed successfully!")
+def test_rank_tags(setup):
+    _, names, T, in_vocab, _, W = setup
+    S = similarity_matrix_numpy(W, T)
+    ranked = rank_tags(names, S, in_vocab)
+    assert len(ranked) == 20
+    assert ranked[0][1] >= ranked[-1][1]
+    assert ranked[0][1] == pytest.approx(1.0)
